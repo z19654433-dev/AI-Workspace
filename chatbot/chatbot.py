@@ -9,20 +9,18 @@ client = OpenAI(
 )
 
 
-def chat(user_message):
+
+
+
+def chat(messages):
+
 
     response = client.chat.completions.create(
         model="deepseek-chat",
-        messages=[
-            {
-                "role": "system",
-                "content": "你是一个友好的AI助手"
-            },
-            {
-                "role": "user",
-                "content": user_message
-            }
-        ]
+        messages=messages
     )
 
-    return response.choices[0].message.content
+    answer = response.choices[0].message.content
+
+
+    return answer

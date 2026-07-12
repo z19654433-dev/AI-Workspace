@@ -1,14 +1,25 @@
-from chatbot.chatbot import chat
+from agent.agent import Agent
 
 
-while True:
+def main():
+    print("AI助手启动成功！输入 exit 退出\n")
 
-    user_input = input("你: ")
+    agent = Agent()
 
-    if user_input == "exit":
-        print("AI: 再见！")
-        break
+    while True:
+        user_input = input("你: ")
 
-    answer = chat(user_input)
+        if user_input.lower() == "exit":
+            print("AI: 再见！")
+            break
 
-    print("AI:", answer)
+        if not user_input.strip():
+            continue
+
+        answer = agent.run(user_input)
+
+        print("AI:", answer)
+
+
+if __name__ == "__main__":
+    main()
