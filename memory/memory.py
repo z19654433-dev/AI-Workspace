@@ -1,6 +1,6 @@
 # memory/memory.py
 import sqlite3
-import json
+import os   # 新增导入
 from datetime import datetime
 from typing import List, Dict, Optional
 
@@ -14,7 +14,12 @@ class Memory:
         self._init_db()
 
     def _init_db(self):
-        """初始化数据库表"""
+        """初始化数据库表和目录"""
+        # 确保存放数据库的文件夹存在
+        db_dir = os.path.dirname(self.db_path)
+        if db_dir and not os.path.exists(db_dir):
+            os.makedirs(db_dir, exist_ok=True)
+
         with sqlite3.connect(self.db_path) as conn:
             cursor = conn.cursor()
             cursor.execute("""
@@ -26,15 +31,14 @@ class Memory:
                     timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
                 )
             """)
-            # 创建索引，加速按 session_id 查询
             cursor.execute("""
                 CREATE INDEX IF NOT EXISTS idx_session_id 
                 ON conversations (session_id)
             """)
             conn.commit()
 
+    # 下面的 save_message, load_history, clear_session 保持不变（和之前一样）
     def save_message(self, session_id: str, role: str, content: str):
-        """保存单条消息"""
         with sqlite3.connect(self.db_path) as conn:
             cursor = conn.cursor()
             cursor.execute(
@@ -44,10 +48,6 @@ class Memory:
             conn.commit()
 
     def load_history(self, session_id: str, limit: int = 20) -> List[Dict[str, str]]:
-        """
-        加载某个会话的最近 N 条历史记录
-        返回格式: [{"role": "user", "content": "你好"}, ...]
-        """
         with sqlite3.connect(self.db_path) as conn:
             cursor = conn.cursor()
             cursor.execute(
@@ -59,12 +59,9 @@ class Memory:
                 (session_id, limit)
             )
             rows = cursor.fetchall()
-            # 反转顺序，使最早的消息在前（保持上下文顺序）
-            history = [{"role": row[0], "content": row[1]} for row in rows[::-1]]
-            return history
+            return [{"role": row[0], "content": row[1]} for row in rows[::-1]]
 
     def clear_session(self, session_id: str):
-        """清空某个会话的所有记忆（慎用）"""
         with sqlite3.connect(self.db_path) as conn:
             cursor = conn.cursor()
             cursor.execute(
