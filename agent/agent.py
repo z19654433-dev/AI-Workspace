@@ -1,9 +1,10 @@
-# agent/agent.py
 import json
-from chatbot.chatbot import chat
-from tools.registry import tools
+from tools import registry
 from memory.memory import Memory
-from agent.tool_schemas import tools_schema
+from chatbot.chatbot import chat
+from utils.logger import get_logger
+
+logger = get_logger(__name__)
 
 
 class Agent:
@@ -11,21 +12,23 @@ class Agent:
     def __init__(self, session_id: str = "default_session"):
         self.name = "MyAgent"
         self.session_id = session_id
-
-        # 初始化记忆模块
         self.memory = Memory()
-
-        # 加载历史记忆（最近20条）
         history = self.memory.load_history(self.session_id, limit=20)
-
-        # 构建 messages：system + 历史记录
+        system_prompt = (
+            "你是一个友好的AI助手。你可以做以下事情：\n"
+            "1. 查询天气：告诉用户输入城市名即可查天气\n"
+            "2. 数学计算：进行精确的数学运算\n"
+            "3. 今日热榜：查看GitHub趋势项目或百度热搜（默认GitHub）\n"
+            "回答简洁友好，每次只回答用户的当前问题，不要提前列出一堆功能。请确保用词准确。"
+        )
         self.messages = [
             {
                 "role": "system",
-                "content": "你是一个友好的AI助手，可以查询天气和进行数学计算。"
+                "content": system_prompt,
             }
         ]
         self.messages.extend(history)
+        logger.info("Agent 初始化完成, session=%s", session_id)
 
     def add_user_message(self, content):
         self.messages.append({"role": "user", "content": content})
@@ -35,9 +38,7 @@ class Agent:
         self.messages.append({"role": "assistant", "content": content})
         self.memory.save_message(self.session_id, "assistant", content)
 
-    def add_tool_messages(self, tool_call_id, tool_name, result):
-        """记录工具调用过程（方便调试，也存入记忆）"""
-        # 保存工具调用结果到 memory（用特殊格式标记）
+    def add_tool_messages(self, tool_name, result):
         self.memory.save_message(
             self.session_id,
             "assistant",
@@ -45,53 +46,52 @@ class Agent:
         )
 
     def run(self, message):
-        # 1. 添加用户消息
         self.add_user_message(message)
+        logger.info("用户输入: %s", message)
 
-        # 2. 第一次调用 LLM（带工具定义）
-        response = chat(self.messages, tools=tools_schema, tool_choice="auto")
+        response = chat(self.messages, tools=registry.schemas, tool_choice="auto")
         choice = response.choices[0]
         finish_reason = choice.finish_reason
 
-        # 3. 判断是否需要调用工具
         if finish_reason == "tool_calls":
-            # 提取工具调用信息
-            tool_call = choice.message.tool_calls[0]
-            tool_name = tool_call.function.name
-            tool_args = json.loads(tool_call.function.arguments)
+            tool_calls = choice.message.tool_calls
+            logger.info("触发工具调用, 数量=%d", len(tool_calls))
 
-            # 4. 执行工具
-            result = None
-            result = tools[tool_name](**tool_args)
-            # 5. 将模型的工具调用请求加入消息历史
             self.messages.append(choice.message.model_dump())
 
-            # 6. 将工具执行结果加入消息历史
-            self.messages.append({
-                "role": "tool",
-                "tool_call_id": tool_call.id,
-                "content": str(result)
-            })
+            for tool_call in tool_calls:
+                tool_name = tool_call.function.name
+                tool_args = json.loads(tool_call.function.arguments)
+                logger.info("执行工具: %s, 参数=%s", tool_name, tool_args)
 
-            # 7. 记录工具执行到 memory（便于追踪）
-            self.add_tool_messages(tool_call.id, tool_name, str(result))
+                result = registry.tools[tool_name](**tool_args)
+                self.messages.append({
+                    "role": "tool",
+                    "tool_call_id": tool_call.id,
+                    "content": str(result),
+                })
+                self.add_tool_messages(tool_name, str(result))
+                logger.info("工具 %s 返回: %s", tool_name, result)
 
-            # 8. 第二次调用 LLM（不带工具，生成最终回复）
-            final_response = chat(self.messages, tools=None)
+            final_response = chat(self.messages, tools=registry.schemas, tool_choice="none")
             final_answer = final_response.choices[0].message.content
-
-            # 9. 保存最终回答到记忆
             self.add_assistant_message(final_answer)
-
+            logger.info("最终回答: %s", final_answer[:100])
             return final_answer
-
-        # 如果没有工具调用，直接返回普通回答
         else:
             answer = choice.message.content
             self.add_assistant_message(answer)
+            logger.info("直接回答: %s", answer[:100])
             return answer
 
     def clear_memory(self):
-        """清空当前会话的记忆"""
         self.memory.clear_session(self.session_id)
-        self.messages = [{"role": "system", "content": "你是一个友好的AI助手，可以查询天气和进行数学计算。"}]
+        system_prompt = (
+            "你是一个友好的AI助手。你可以做以下事情：\n"
+            "1. 查询天气：告诉用户输入城市名即可查天气\n"
+            "2. 数学计算：进行精确的数学运算\n"
+            "3. 今日热榜：查看GitHub趋势项目或百度热搜（默认GitHub）\n"
+            "回答简洁友好，每次只回答用户的当前问题，不要提前列出一堆功能。请确保用词准确。"
+        )
+        self.messages = [{"role": "system", "content": system_prompt}]
+        logger.info("记忆已清除, session=%s", self.session_id)

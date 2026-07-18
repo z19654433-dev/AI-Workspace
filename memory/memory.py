@@ -1,21 +1,14 @@
-# memory/memory.py
 import sqlite3
-import os   # 新增导入
+import os
 from datetime import datetime
 from typing import List, Dict, Optional
 
 class Memory:
-    """
-    SQLite 长期记忆管理
-    负责保存和加载对话历史
-    """
     def __init__(self, db_path: str = "memory/chat_history.db"):
         self.db_path = db_path
         self._init_db()
 
     def _init_db(self):
-        """初始化数据库表和目录"""
-        # 确保存放数据库的文件夹存在
         db_dir = os.path.dirname(self.db_path)
         if db_dir and not os.path.exists(db_dir):
             os.makedirs(db_dir, exist_ok=True)
@@ -37,7 +30,6 @@ class Memory:
             """)
             conn.commit()
 
-    # 下面的 save_message, load_history, clear_session 保持不变（和之前一样）
     def save_message(self, session_id: str, role: str, content: str):
         with sqlite3.connect(self.db_path) as conn:
             cursor = conn.cursor()
