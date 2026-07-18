@@ -65,9 +65,20 @@ function App() {
           <h1 className="text-lg font-semibold text-gray-800">
             AI Agent
           </h1>
-          <span className="text-xs text-gray-400 font-mono">
-            ID: {sessionId.slice(0, 12)}
-          </span>
+          <div className="flex items-center gap-3">
+            <span className="text-xs text-gray-400 font-mono">
+              {sessionId.slice(0, 12)}
+            </span>
+            {messages.length > 0 && (
+              <button
+                onClick={() => setMessages([])}
+                className="text-xs text-gray-400 hover:text-red-500 transition cursor-pointer"
+                title="清空对话"
+              >
+                清空
+              </button>
+            )}
+          </div>
         </div>
       </header>
 
@@ -88,13 +99,22 @@ function App() {
               className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}
             >
               <div
-                className={`max-w-[75%] rounded-2xl px-4 py-2.5 whitespace-pre-wrap leading-relaxed ${
+                className={`group max-w-[75%] rounded-2xl px-4 py-2.5 whitespace-pre-wrap leading-relaxed ${
                   msg.role === 'user'
                     ? 'bg-blue-600 text-white rounded-br-md'
                     : 'bg-gray-100 text-gray-800 rounded-bl-md'
                 }`}
               >
-                {msg.content}
+                <div className="relative">
+                  {msg.content}
+                  <button
+                    onClick={() => navigator.clipboard.writeText(msg.content)}
+                    className="absolute -top-1 -right-1 opacity-0 group-hover:opacity-100 transition text-xs bg-gray-300 hover:bg-gray-400 text-gray-700 rounded px-1.5 py-0.5 cursor-pointer"
+                    title="复制"
+                  >
+                    复制
+                  </button>
+                </div>
               </div>
             </div>
           ))}
