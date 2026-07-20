@@ -17,3 +17,5 @@ Thumbs.db
 
 # Database files
 *.db
+# ChromaDB 向量存储
+knowledge/chroma_db/
