@@ -24,11 +24,13 @@ app.add_middleware(
 class ChatRequest(BaseModel):
     message: str
     session_id: str = "default_session"
+    model_provider: str = "deepseek"
 
 
 class ChatResponse(BaseModel):
     reply: str
     session_id: str
+    model_provider: str = "deepseek"
 
 
 @app.get("/")
@@ -44,8 +46,8 @@ async def root():
 async def chat_endpoint(request: ChatRequest):
     try:
         agent = Agent(session_id=request.session_id)
-        reply = agent.run(request.message)
-        return ChatResponse(reply=reply, session_id=request.session_id)
+        reply = agent.run(request.message, model_provider=request.model_provider)
+        return ChatResponse(reply=reply, session_id=request.session_id, model_provider=request.model_provider)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Agent 处理失败: {str(e)}")
 

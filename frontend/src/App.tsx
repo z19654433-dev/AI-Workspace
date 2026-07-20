@@ -10,6 +10,7 @@ function App() {
   const [input, setInput] = useState('')
   const [loading, setLoading] = useState(false)
   const [sessionId] = useState(() => 'session_' + Date.now().toString(36))
+  const [modelProvider, setModelProvider] = useState('deepseek')
   const bottomRef = useRef<HTMLDivElement>(null)
 
   // 自动滚动到底部
@@ -30,7 +31,7 @@ function App() {
       const res = await fetch(`${apiBase}/chat`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ message: text, session_id: sessionId }),
+        body: JSON.stringify({ message: text, session_id: sessionId, model_provider: modelProvider }),
       })
 
       if (!res.ok) {
@@ -65,7 +66,17 @@ function App() {
           <h1 className="text-lg font-semibold text-gray-800">
             AI Agent
           </h1>
-          <div className="flex items-center gap-3">
+          <div className="flex items-center gap-2">
+            <select
+              value={modelProvider}
+              onChange={(e) => setModelProvider(e.target.value)}
+              className="text-xs bg-gray-100 border border-gray-300 rounded px-2 py-1 text-gray-700 cursor-pointer"
+            >
+              <option value="deepseek">DeepSeek</option>
+              <option value="glm">智谱 GLM</option>
+              <option value="qwen">通义千问</option>
+              <option value="yi">零一万物</option>
+            </select>
             <span className="text-xs text-gray-400 font-mono">
               {sessionId.slice(0, 12)}
             </span>

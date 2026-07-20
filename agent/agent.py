@@ -46,11 +46,11 @@ class Agent:
             f"[工具调用] {tool_name} 返回: {result}"
         )
 
-    def run(self, message):
+    def run(self, message, model_provider: str = "deepseek"):
         self.add_user_message(message)
         logger.info("用户输入: %s", message)
 
-        response = chat(self.messages, tools=registry.schemas, tool_choice="auto")
+        response = chat(self.messages, tools=registry.schemas, tool_choice="auto", provider=model_provider)
         choice = response.choices[0]
         finish_reason = choice.finish_reason
 
@@ -74,7 +74,7 @@ class Agent:
                 self.add_tool_messages(tool_name, str(result))
                 logger.info("工具 %s 返回: %s", tool_name, result)
 
-            final_response = chat(self.messages, tools=registry.schemas, tool_choice="none")
+            final_response = chat(self.messages, tools=registry.schemas, tool_choice="none", provider=model_provider)
             final_answer = final_response.choices[0].message.content
             self.add_assistant_message(final_answer)
             logger.info("最终回答: %s", final_answer[:100])
