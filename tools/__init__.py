@@ -135,3 +135,4 @@ registry = ToolRegistry()
 from . import calculator  # noqa: E402
 from . import weather     # noqa: E402
 from . import hotlist      # noqa: E402
+import knowledge               # noqa: E402
