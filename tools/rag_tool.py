@@ -6,6 +6,8 @@ from utils.logger import get_logger
 
 logger = get_logger(__name__)
 
+MAX_RESULT_LENGTH = 1500  # 返回给 LLM 的最大字符数
+
 
 @registry.register(
     description="在个人知识库中检索信息来回答专业问题。"
@@ -19,4 +21,8 @@ def knowledge_search(query: str) -> str:
         query: 用户的问题或查询关键词
     """
     logger.info("RAG 工具被调用: %s", query)
-    return rag_query(query)
+    result = rag_query(query)
+    # 截断过长结果，防止 token 超出限制
+    if len(result) > MAX_RESULT_LENGTH:
+        result = result[:MAX_RESULT_LENGTH] + "\n\n[回答过长已截断]"
+    return result

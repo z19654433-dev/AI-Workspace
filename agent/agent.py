@@ -6,6 +6,8 @@ from utils.logger import get_logger
 
 logger = get_logger(__name__)
 
+MAX_TOOL_ROUNDS = 5   # 最多 5 轮工具调用，防止死循环
+
 
 class Agent:
 
@@ -37,6 +39,8 @@ class Agent:
         self.messages.extend(history)
         logger.info("Agent 初始化完成, session=%s", session_id)
 
+    # ── 消息管理 ──
+
     def add_user_message(self, content):
         self.messages.append({"role": "user", "content": content})
         self.memory.save_message(self.session_id, "user", content)
@@ -46,50 +50,97 @@ class Agent:
         self.memory.save_message(self.session_id, "assistant", content)
 
     def add_tool_messages(self, tool_name, result):
+        """持久化工具调用结果（截断过长内容）"""
+        truncated = str(result)[:500] + ("..." if len(str(result)) > 500 else "")
         self.memory.save_message(
             self.session_id,
-            "assistant",
-            f"[工具调用] {tool_name} 返回: {result}"
+            "tool",
+            f"[{tool_name}] {truncated}",
         )
+
+    # ── 核心执行 ──
+
+    def _execute_tool(self, tool_call) -> str:
+        """安全执行单个工具，异常时返回错误信息"""
+        tool_name = tool_call.function.name
+        try:
+            tool_args = json.loads(tool_call.function.arguments)
+        except json.JSONDecodeError:
+            logger.warning("工具参数解析失败: %s", tool_call.function.arguments)
+            return f"工具参数解析失败"
+
+        logger.info("执行工具: %s, 参数=%s", tool_name, tool_args)
+
+        tool_func = registry.tools.get(tool_name)
+        if tool_func is None:
+            logger.warning("未知工具: %s", tool_name)
+            return f"工具 {tool_name} 不存在"
+
+        try:
+            result = tool_func(**tool_args)
+            logger.info("工具 %s 返回成功", tool_name)
+            return str(result)
+        except Exception as e:
+            logger.error("工具 %s 执行失败: %s", tool_name, e)
+            return f"工具执行失败: {str(e)}"
 
     def run(self, message, model_provider: str = "deepseek"):
         self.add_user_message(message)
         logger.info("用户输入: %s", message)
 
-        response = chat(self.messages, tools=registry.schemas, tool_choice="auto", provider=model_provider)
-        choice = response.choices[0]
-        finish_reason = choice.finish_reason
+        # ── 多轮 tool calling 循环 ──
+        for round_num in range(MAX_TOOL_ROUNDS):
+            response = chat(
+                self.messages,
+                tools=registry.schemas,
+                tool_choice="auto",
+                provider=model_provider,
+            )
+            choice = response.choices[0]
+            finish_reason = choice.finish_reason
 
-        if finish_reason == "tool_calls":
+            if finish_reason != "tool_calls":
+                # 没有工具调用 → 直接返回
+                answer = choice.message.content
+                self.add_assistant_message(answer)
+                logger.info("回答（第%d轮）: %s", round_num + 1, answer[:100])
+                return answer
+
+            # ── 执行工具调用 ──
             tool_calls = choice.message.tool_calls
-            logger.info("触发工具调用, 数量=%d", len(tool_calls))
+            logger.info(
+                "第%d轮工具调用, 数量=%d, 工具=%s",
+                round_num + 1,
+                len(tool_calls),
+                [tc.function.name for tc in tool_calls],
+            )
 
+            # 把 Assistant 消息（含 tool_calls）加入 messages
             self.messages.append(choice.message.model_dump())
 
+            # 逐个执行
             for tool_call in tool_calls:
-                tool_name = tool_call.function.name
-                tool_args = json.loads(tool_call.function.arguments)
-                logger.info("执行工具: %s, 参数=%s", tool_name, tool_args)
-
-                result = registry.tools[tool_name](**tool_args)
+                result = self._execute_tool(tool_call)
                 self.messages.append({
                     "role": "tool",
                     "tool_call_id": tool_call.id,
-                    "content": str(result),
+                    "content": result,
                 })
-                self.add_tool_messages(tool_name, str(result))
-                logger.info("工具 %s 返回: %s", tool_name, result)
+                self.add_tool_messages(tool_call.function.name, result)
 
-            final_response = chat(self.messages, tools=registry.schemas, tool_choice="none", provider=model_provider)
-            final_answer = final_response.choices[0].message.content
-            self.add_assistant_message(final_answer)
-            logger.info("最终回答: %s", final_answer[:100])
-            return final_answer
-        else:
-            answer = choice.message.content
-            self.add_assistant_message(answer)
-            logger.info("直接回答: %s", answer[:100])
-            return answer
+            # 继续下一轮，让 DeepSeek 决定是否还需要更多工具
+
+        # 超过最大轮数，用当前上下文强制生成答案
+        logger.warning("达到最大工具调用轮数 %d，强制生成答案", MAX_TOOL_ROUNDS)
+        final_response = chat(
+            self.messages,
+            tools=registry.schemas,
+            tool_choice="none",
+            provider=model_provider,
+        )
+        final_answer = final_response.choices[0].message.content
+        self.add_assistant_message(final_answer)
+        return final_answer
 
     def clear_memory(self):
         self.memory.clear_session(self.session_id)
