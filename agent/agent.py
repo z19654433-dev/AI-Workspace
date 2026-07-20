@@ -54,7 +54,7 @@ class Agent:
         truncated = str(result)[:500] + ("..." if len(str(result)) > 500 else "")
         self.memory.save_message(
             self.session_id,
-            "tool",
+            "assistant",
             f"[{tool_name}] {truncated}",
         )
 

@@ -45,7 +45,7 @@ class Memory:
             cursor.execute(
                 """
                 SELECT role, content FROM conversations 
-                WHERE session_id = ? 
+                WHERE session_id = ? AND role IN ('user', 'assistant')
                 ORDER BY id DESC LIMIT ?
                 """,
                 (session_id, limit)
