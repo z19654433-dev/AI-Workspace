@@ -1,7 +1,7 @@
-"""Embedding 管理：统一接口，支持切换模型后端"""
+"""Embedding 管理 —— 支持本地模型 / DeepSeek API"""
 
-from abc import ABC, abstractmethod
 from typing import List
+from langchain_core.embeddings import Embeddings
 
 from .config import config
 from utils.logger import get_logger
@@ -9,62 +9,49 @@ from utils.logger import get_logger
 logger = get_logger(__name__)
 
 
-class BaseEmbedding(ABC):
-    """Embedding 基类"""
-
-    @abstractmethod
-    def embed_query(self, text: str) -> List[float]:
-        ...
-
-    @abstractmethod
-    def embed_documents(self, texts: List[str]) -> List[List[float]]:
-        ...
-
-
-class DefaultEmbedding(BaseEmbedding):
-    """使用 ChromaDB 内置的 all-MiniLM-L6-v2"""
+class ChromaDefaultEmbeddings(Embeddings):
+    """LangChain 适配器：包装 ChromaDB 内置的 all-MiniLM-L6-v2"""
 
     def __init__(self):
-        self._embedding_function = None
-
-    def _get_fn(self):
-        if self._embedding_function is None:
-            try:
-                import chromadb.utils.embedding_functions as ef
-                self._embedding_function = ef.DefaultEmbeddingFunction()
-                logger.info("Embedding: ChromaDB 内置模型")
-            except Exception as e:
-                logger.error("加载内置 Embedding 失败: %s", e)
-                raise
-        return self._embedding_function
-
-    def embed_query(self, text: str) -> List[float]:
-        fn = self._get_fn()
-        return fn([text])[0]
+        from chromadb.utils.embedding_functions import DefaultEmbeddingFunction
+        self._fn = DefaultEmbeddingFunction()
 
     def embed_documents(self, texts: List[str]) -> List[List[float]]:
-        fn = self._get_fn()
-        return fn(texts)
+        return self._fn(texts)
+
+    def embed_query(self, text: str) -> List[float]:
+        return self._fn([text])[0]
 
 
-# ── 预留：sentence-transformers 本地模型 ──
-# class SentenceTransformerEmbedding(BaseEmbedding):
-#     def __init__(self, model_name: str = "all-MiniLM-L6-v2"):
-#         from sentence_transformers import SentenceTransformer
-#         self.model = SentenceTransformer(model_name)
-#
-#     def embed_query(self, text: str) -> List[float]:
-#         return self.model.encode(text).tolist()
-#
-#     def embed_documents(self, texts: List[str]) -> List[List[float]]:
-#         return self.model.encode(texts).tolist()
+class DeepSeekEmbeddings(Embeddings):
+    """DeepSeek Embedding API（OpenAI 兼容格式）"""
+
+    def __init__(self, api_key: str, base_url: str = "https://api.deepseek.com"):
+        from openai import OpenAI
+        self.client = OpenAI(api_key=api_key, base_url=base_url)
+        self.model = "deepseek-embedding"
+
+    def embed_documents(self, texts: List[str]) -> List[List[float]]:
+        resp = self.client.embeddings.create(model=self.model, input=texts)
+        return [item.embedding for item in resp.data]
+
+    def embed_query(self, text: str) -> List[float]:
+        resp = self.client.embeddings.create(model=self.model, input=[text])
+        return resp.data[0].embedding
 
 
-def get_embedding() -> BaseEmbedding:
-    """工厂方法"""
+def get_embedding() -> Embeddings:
+    """工厂方法：根据配置选择 Embedding 模型"""
     model_type = config.EMBEDDING_MODEL
-    if model_type == "default":
-        return DefaultEmbedding()
-    # elif model_type == "sentence-transformers":
-    #     return SentenceTransformerEmbedding()
-    raise ValueError(f"不支持的 Embedding 类型: {model_type}")
+
+    if model_type == "deepseek":
+        from config import DEEPSEEK_API_KEY
+        if not DEEPSEEK_API_KEY:
+            logger.warning("DEEPSEEK_API_KEY 未配置，回退到本地模型")
+            return ChromaDefaultEmbeddings()
+        logger.info("Embedding: DeepSeek API")
+        return DeepSeekEmbeddings(api_key=DEEPSEEK_API_KEY)
+
+    # default → ChromaDB 内置模型
+    logger.info("Embedding: ChromaDB 内置 all-MiniLM-L6-v2")
+    return ChromaDefaultEmbeddings()

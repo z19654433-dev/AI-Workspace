@@ -1,10 +1,11 @@
-"""向量数据库：抽象接口 + ChromaDB 实现"""
+"""向量存储 —— 基于 LangChain Chroma 封装"""
 
-from abc import ABC, abstractmethod
-from typing import List, Dict, Any
 from pathlib import Path
+from typing import List
 
-import chromadb
+from langchain_chroma import Chroma
+from langchain_core.documents import Document
+from langchain_core.vectorstores import VectorStoreRetriever
 
 from .config import config
 from .embeddings import get_embedding
@@ -13,88 +14,63 @@ from utils.logger import get_logger
 logger = get_logger(__name__)
 
 
-class BaseVectorStore(ABC):
-    """向量数据库抽象接口"""
-
-    @abstractmethod
-    def add(self, ids: List[str], documents: List[str], metadatas: List[Dict] | None = None):
-        ...
-
-    @abstractmethod
-    def search(self, query: str, k: int | None = None) -> List[Dict[str, Any]]:
-        ...
-
-    @abstractmethod
-    def count(self) -> int:
-        ...
-
-    @abstractmethod
-    def delete_collection(self):
-        ...
-
-
-class ChromaStore(BaseVectorStore):
-    """ChromaDB 实现"""
+class VectorStore:
+    """向量数据库封装"""
 
     def __init__(self):
         persist_dir = Path(config.VECTOR_DB_DIR)
         persist_dir.mkdir(parents=True, exist_ok=True)
 
-        self._client = chromadb.PersistentClient(path=str(persist_dir))
-        self._embedding_fn = get_embedding()._get_fn()
-
-        self._collection = self._client.get_or_create_collection(
-            name=config.COLLECTION_NAME,
-            embedding_function=self._embedding_fn,
+        embedding = get_embedding()
+        self._store = Chroma(
+            collection_name=config.COLLECTION_NAME,
+            embedding_function=embedding,
+            persist_directory=str(persist_dir),
         )
-        logger.info("ChromaDB 初始化完成, 文档数=%d", self._collection.count())
+        self._retriever: VectorStoreRetriever | None = None
+        logger.info("向量库初始化完成, 文档数=%d", self._store._collection.count())
 
-    def add(self, ids: List[str], documents: List[str], metadatas: List[Dict] | None = None):
-        batch_size = 100
-        for i in range(0, len(ids), batch_size):
-            end = i + batch_size
-            self._collection.add(
-                ids=ids[i:end],
-                documents=documents[i:end],
-                metadatas=metadatas[i:end] if metadatas else None,
+    # ── 写入 ──
+
+    def add_documents(self, documents: List[Document]) -> int:
+        """批量写入文档"""
+        ids = self._store.add_documents(documents)
+        logger.info("向量库写入 %d 条", len(documents))
+        # 清除缓存检索器
+        self._retriever = None
+        return len(ids)
+
+    # ── 检索 ──
+
+    def get_retriever(self, k: int | None = None) -> VectorStoreRetriever:
+        """获取 LangChain Retriever"""
+        if self._retriever is None or k:
+            self._retriever = self._store.as_retriever(
+                search_kwargs={"k": k or config.RETRIEVE_TOP_K},
             )
+        return self._retriever
 
-    def search(self, query: str, k: int | None = None) -> List[Dict[str, Any]]:
-        top_k = k or config.RETRIEVE_TOP_K
-        results = self._collection.query(
-            query_texts=[query],
-            n_results=top_k,
-        )
-        items = []
-        if results["documents"] and results["documents"][0]:
-            for i, doc in enumerate(results["documents"][0]):
-                items.append({
-                    "content": doc,
-                    "metadata": (results["metadatas"][0][i] if results["metadatas"] else {}),
-                    "score": results["distances"][0][i] if results.get("distances") else 0,
-                })
-        return items
+    def search(self, query: str, k: int | None = None) -> List[Document]:
+        """语义检索，返回 Document 列表"""
+        retriever = self.get_retriever(k)
+        docs = retriever.invoke(query)
+        return docs
+
+    # ── 管理 ──
 
     def count(self) -> int:
-        return self._collection.count()
+        return self._store._collection.count()
 
-    def delete_collection(self):
-        self._client.delete_collection(config.COLLECTION_NAME)
-        self._collection = self._client.create_collection(
-            name=config.COLLECTION_NAME,
-            embedding_function=self._embedding_fn,
-        )
-        logger.info("知识库已清空")
+    def delete_all(self):
+        self._store.delete_collection()
+        logger.info("向量库已清空")
 
 
-# ── 工厂 ──
-
-_store_instance = None
+_store_instance: VectorStore | None = None
 
 
-def get_vector_store() -> BaseVectorStore:
-    """全局单例：获取向量数据库实例"""
+def get_vector_store() -> VectorStore:
     global _store_instance
     if _store_instance is None:
-        _store_instance = ChromaStore()
+        _store_instance = VectorStore()
     return _store_instance
