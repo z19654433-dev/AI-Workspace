@@ -6,9 +6,14 @@ from pydantic import BaseModel
 from agent.agent import Agent
 from auth import register as auth_register, login as auth_login, logout as auth_logout, verify_token, get_default_session, get_user_info as auth_get_user_info, update_display_name as auth_update_display_name, update_password as auth_update_password, get_user_sessions_list as auth_get_sessions, create_new_session as auth_create_session, delete_user_session as auth_delete_session, get_session_history as auth_get_session_history
 from knowledge.pipeline import index_documents, query as rag_query
+from memory.memory import Memory
+from chatbot.chatbot import get_available_models
 from pathlib import Path
 import shutil
 import uvicorn
+
+# 用户级 LLM 密钥存储（建表在 Memory.__init__ 中完成）
+memory = Memory()
 
 
 app = FastAPI(
@@ -47,6 +52,14 @@ class ChatRequest(BaseModel):
     message: str
     session_id: str = "default_session"
     model_provider: str = "deepseek"
+
+
+class LLMKeyRequest(BaseModel):
+    """用户级 LLM 密钥：前端切换器用，每个用户可填自己的各厂商 key"""
+    provider: str                       # deepseek | glm | qwen | yi
+    api_key: str
+    base_url: str = ""                  # 可选，缺省用该厂商默认 base_url
+    model: str = ""                     # 可选，缺省用该厂商默认模型
 
 
 class ChatResponse(BaseModel):
@@ -188,6 +201,59 @@ async def update_password(request: UpdatePasswordRequest, user_id: int = Depends
     return {"success": True, "message": msg}
 
 
+# ========== 用户级 LLM 密钥（前端切换器用） ==========
+
+@app.get("/user/llm-keys")
+async def list_user_llm_keys(user_id: int = Depends(get_current_user)):
+    """获取当前用户已配置的模型密钥（脱敏，不返回真实 key）"""
+    keys = memory.get_user_llm_keys(user_id)
+    configured = [k["provider"] for k in keys]
+    return {"keys": keys, "configured_providers": configured}
+
+
+@app.put("/user/llm-keys")
+async def save_user_llm_key(request: LLMKeyRequest, user_id: int = Depends(get_current_user)):
+    """保存（更新）某模型的用户级密钥"""
+    ok = memory.set_user_llm_key(
+        user_id, request.provider, request.api_key, request.base_url or "", request.model or ""
+    )
+    if not ok:
+        raise HTTPException(status_code=400, detail="provider 非法或未提供 api_key")
+    return {"success": True, "provider": request.provider}
+
+
+@app.delete("/user/llm-keys/{provider}")
+async def delete_user_llm_key_endpoint(provider: str, user_id: int = Depends(get_current_user)):
+    """删除某模型的用户级密钥"""
+    ok = memory.delete_user_llm_key(user_id, provider)
+    if not ok:
+        raise HTTPException(status_code=404, detail="未找到该模型配置")
+    return {"success": True, "provider": provider}
+
+
+@app.get("/models")
+async def list_models(user_id: int = Depends(get_current_user)):
+    """返回所有模型及其配置状态：全局 available（.env 是否配 key）+ 用户已配，
+    合并为 effective（true=真正用该模型，false=将静默回退 DeepSeek 兜底）。"""
+    try:
+        user_keys = memory.get_user_llm_keys(user_id)
+        user_configured = {k["provider"] for k in user_keys}
+    except Exception:
+        user_configured = set()
+    models = get_available_models()  # [{id,label,role,available}]
+    result = []
+    for m in models:
+        uc = m["id"] in user_configured
+        g_available = bool(m.get("available", False))
+        result.append({
+            "id": m["id"],
+            "available": g_available,         # 全局 .env 是否配了 key
+            "user_configured": uc,            # 该用户是否在前端填了自己的 key
+            "effective": g_available or uc,   # 真正可用（不兜底）
+        })
+    return {"models": result}
+
+
 # ========== 会话管理接口 ==========
 
 @app.get("/user/sessions")
@@ -239,7 +305,7 @@ async def root():
 async def chat_endpoint(request: ChatRequest, user_id: int = Depends(get_current_user)):
     try:
         agent = get_agent(request.session_id)
-        reply = agent.run(request.message, model_provider=request.model_provider)
+        reply = agent.run(request.message, model_provider=request.model_provider, user_id=user_id)
         return ChatResponse(
             reply=reply,
             session_id=request.session_id,
@@ -256,7 +322,7 @@ async def chat_stream_endpoint(request: ChatRequest, user_id: int = Depends(get_
 
     async def event_generator():
         try:
-            for event in agent.run_stream(request.message, model_provider=request.model_provider):
+            for event in agent.run_stream(request.message, model_provider=request.model_provider, user_id=user_id):
                 yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
         except Exception as e:
             yield f"data: {json.dumps({'type': 'error', 'content': str(e)}, ensure_ascii=False)}\n\n"

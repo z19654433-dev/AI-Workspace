@@ -90,7 +90,10 @@ class Agent:
             logger.error("工具 %s 执行失败: %s", tool_name, e)
             return f"工具执行失败: {str(e)}"
 
-    def run(self, message, model_provider: str = "deepseek"):
+    def run(self, message, model_provider: str = "deepseek", user_id: int = None):
+        # 若有 user_id，优先取该用户为该模型配置的密钥（用户级 key 覆盖全局配置）
+        user_key = self.memory.get_user_llm_key(user_id, model_provider) if user_id else None
+        user_key = user_key if (user_key and user_key.get("api_key")) else None
         # ── 重建基础上下文：system prompt + 最近 SQLite 历史 ──
         # 每次 run 从干净状态开始，避免 messages 无限膨胀
         system_msg = self.messages[0]  # 第一条始终是 system prompt
@@ -125,6 +128,7 @@ class Agent:
                 tools=registry.schemas,
                 tool_choice="auto",
                 provider=model_provider,
+                user_key=user_key,
             )
             choice = response.choices[0]
             finish_reason = choice.finish_reason
@@ -168,17 +172,21 @@ class Agent:
             tools=registry.schemas,
             tool_choice="none",
             provider=model_provider,
+            user_key=user_key,
         )
         final_answer = final_response.choices[0].message.content
         self.add_assistant_message(final_answer)
         return final_answer
 
-    def run_stream(self, message, model_provider: str = "deepseek"):
+    def run_stream(self, message, model_provider: str = "deepseek", user_id: int = None):
         """流式执行：tool calling 阶段非流式，最终回答流式输出。
 
         Yields:
             dict: {"type": "token", "content": str} | {"type": "done", "content": str}
         """
+        # 若有 user_id，优先取该用户为该模型配置的密钥（用户级 key 覆盖全局配置）
+        user_key = self.memory.get_user_llm_key(user_id, model_provider) if user_id else None
+        user_key = user_key if (user_key and user_key.get("api_key")) else None
         # ── 重建基础上下文 ──
         system_msg = self.messages[0]
         recent = self.memory.load_history(self.session_id, limit=RECENT_HISTORY_LIMIT)
@@ -214,6 +222,7 @@ class Agent:
                 tools=registry.schemas,
                 tool_choice="auto",
                 provider=model_provider,
+                user_key=user_key,
             )
             choice = response.choices[0]
             finish_reason = choice.finish_reason
@@ -227,6 +236,7 @@ class Agent:
                         tools=registry.schemas,
                         tool_choice="none",
                         provider=model_provider,
+                        user_key=user_key,
                     )
                     for chunk in stream:
                         delta = chunk.choices[0].delta.content or ""
@@ -242,6 +252,7 @@ class Agent:
                             tools=registry.schemas,
                             tool_choice="none",
                             provider=model_provider,
+                            user_key=user_key,
                         )
                         collected = fallback.choices[0].message.content or ""
                         if collected:
@@ -259,6 +270,7 @@ class Agent:
                             tools=registry.schemas,
                             tool_choice="none",
                             provider=model_provider,
+                            user_key=user_key,
                         )
                         collected = fallback.choices[0].message.content or ""
                     except Exception as e2:
@@ -304,6 +316,7 @@ class Agent:
             tools=registry.schemas,
             tool_choice="none",
             provider=model_provider,
+            user_key=user_key,
         )
         final_answer = final_response.choices[0].message.content
         self.add_assistant_message(final_answer)

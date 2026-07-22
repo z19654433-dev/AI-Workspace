@@ -4,7 +4,9 @@ from openai import OpenAI
 from abc import ABC, abstractmethod
 from config import (
     DEEPSEEK_API_KEY, DEEPSEEK_BASE_URL, DEEPSEEK_MODEL,
-    OPENAI_API_KEY, OPENAI_BASE_URL, OPENAI_MODEL_NAME,
+    GLM_API_KEY, GLM_BASE_URL, GLM_MODEL,
+    QWEN_API_KEY, QWEN_BASE_URL, QWEN_MODEL,
+    YI_API_KEY, YI_BASE_URL, YI_MODEL,
 )
 from utils.logger import get_logger
 
@@ -33,9 +35,9 @@ class BaseLLM(ABC):
 class DeepSeekAdapter(BaseLLM):
     """DeepSeek 官方 API"""
 
-    def __init__(self):
-        self.client = OpenAI(api_key=DEEPSEEK_API_KEY, base_url=DEEPSEEK_BASE_URL)
-        self.model = DEEPSEEK_MODEL
+    def __init__(self, api_key: str = None, base_url: str = None, model: str = None):
+        self.client = OpenAI(api_key=api_key or DEEPSEEK_API_KEY, base_url=base_url or DEEPSEEK_BASE_URL)
+        self.model = model or DEEPSEEK_MODEL
 
     @property
     def display_name(self) -> str:
@@ -84,90 +86,118 @@ class OpenAICompatibleAdapter(BaseLLM):
 
 
 # ===== 预设模型列表 =====
-# 键名供前端传参用，值是对应的适配器工厂函数和角色说明
+# 键名供前端传参用；每个厂商各自独立的 key / base_url / model（均来自 config，可用 .env 覆盖）
+# default_base_url / default_model：用户级 key 未填 base_url/model 时的回退默认值
 MODEL_PRESETS = {
     "deepseek": {
         "factory": lambda: DeepSeekAdapter(),
         "label": "DeepSeek",
         "role": "通用助手",
+        "api_key": DEEPSEEK_API_KEY,
+        "default_base_url": DEEPSEEK_BASE_URL,
+        "default_model": DEEPSEEK_MODEL,
     },
     "glm": {
         "factory": lambda: OpenAICompatibleAdapter(
-            model_name="glm-4-flash",
-            api_key=OPENAI_API_KEY,
-            base_url="https://open.bigmodel.cn/api/paas/v4/",
+            model_name=GLM_MODEL,
+            api_key=GLM_API_KEY,
+            base_url=GLM_BASE_URL,
             label="智谱 GLM",
         ),
         "label": "智谱 GLM",
         "role": "创意写作",
+        "api_key": GLM_API_KEY,
+        "default_base_url": GLM_BASE_URL,
+        "default_model": GLM_MODEL,
     },
     "qwen": {
         "factory": lambda: OpenAICompatibleAdapter(
-            model_name="qwen-turbo",
-            api_key=OPENAI_API_KEY,
-            base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
+            model_name=QWEN_MODEL,
+            api_key=QWEN_API_KEY,
+            base_url=QWEN_BASE_URL,
             label="通义千问",
         ),
         "label": "通义千问",
         "role": "逻辑分析",
+        "api_key": QWEN_API_KEY,
+        "default_base_url": QWEN_BASE_URL,
+        "default_model": QWEN_MODEL,
     },
     "yi": {
         "factory": lambda: OpenAICompatibleAdapter(
-            model_name="yi-lightning",
-            api_key=OPENAI_API_KEY,
-            base_url="https://api.lingyiwanwu.com/v1",
+            model_name=YI_MODEL,
+            api_key=YI_API_KEY,
+            base_url=YI_BASE_URL,
             label="零一万物",
         ),
         "label": "零一万物",
         "role": "头脑风暴",
+        "api_key": YI_API_KEY,
+        "default_base_url": YI_BASE_URL,
+        "default_model": YI_MODEL,
     },
 }
 
 
 def get_available_models() -> list[dict]:
-    """返回可用的模型列表（前端展示用）"""
+    """返回模型列表（前端展示用），并标注每个模型是否已配置 key（available）"""
     result = []
     for key, preset in MODEL_PRESETS.items():
         result.append({
             "id": key,
             "label": preset["label"],
             "role": preset["role"],
-        })
-        # 只返回第一个可用模型
-        break
-    # 添加其他模型（需配置Key）
-    for key, preset in list(MODEL_PRESETS.items())[1:]:
-        if key == "deepseek":
-            continue
-        result.append({
-            "id": key,
-            "label": preset["label"],
-            "role": preset["role"],
+            "available": bool(preset.get("api_key")),  # 是否已配置 key
         })
     return result
 
 
-def create_llm(provider: str = "deepseek") -> BaseLLM:
-    """根据 provider 创建对应的 LLM 适配器"""
-    provider = provider.lower().strip()
+def create_llm(provider: str = "deepseek", user_key: dict = None) -> BaseLLM:
+    """根据 provider 创建对应的 LLM 适配器。
 
-    if provider not in MODEL_PRESETS:
+    user_key 非空（dict: {api_key, base_url?, model?}）时优先用用户级密钥覆盖，
+    实现「前端每个用户填自己的 key」，base_url/model 缺省回退该厂商默认。
+    """
+    provider = (provider or "deepseek").lower().strip()
+
+    preset = MODEL_PRESETS.get(provider)
+    if preset is None:
         logger.warning("不支持的模型: %s，回退到 deepseek", provider)
         provider = "deepseek"
+        preset = MODEL_PRESETS[provider]
 
-    preset = MODEL_PRESETS[provider]
+    # ── 用户级 key 优先 ──
+    if user_key and user_key.get("api_key"):
+        api_key = user_key["api_key"]
+        base_url = user_key.get("base_url") or preset["default_base_url"]
+        model = user_key.get("model") or preset["default_model"]
+        if provider == "deepseek":
+            llm = DeepSeekAdapter(api_key=api_key, base_url=base_url, model=model)
+        else:
+            llm = OpenAICompatibleAdapter(
+                model_name=model, api_key=api_key, base_url=base_url, label=preset["label"]
+            )
+        logger.info("LLM(用户级key): %s (%s)", preset["label"], provider)
+        return llm
+
+    # ── 全局 config key ── 未配置对应厂商 key 时，回退到 deepseek，避免用空 key 调用直接报错
+    if not preset.get("api_key"):
+        logger.warning("模型 %s 未配置 API Key（全局与用户级均无），回退到 deepseek", provider)
+        provider = "deepseek"
+        preset = MODEL_PRESETS[provider]
+
     llm = preset["factory"]()
     logger.info("LLM: %s (%s)", preset["label"], provider)
     return llm
 
 
-def chat(messages, tools=None, tool_choice="auto", provider: str = "deepseek"):
-    """对外接口：支持每次请求指定模型"""
-    llm = create_llm(provider)
+def chat(messages, tools=None, tool_choice="auto", provider: str = "deepseek", user_key: dict = None):
+    """对外接口：支持每次请求指定模型与用户级 key"""
+    llm = create_llm(provider, user_key)
     return llm.chat(messages, tools, tool_choice)
 
 
-def chat_stream(messages, tools=None, tool_choice="auto", provider: str = "deepseek"):
+def chat_stream(messages, tools=None, tool_choice="auto", provider: str = "deepseek", user_key: dict = None):
     """流式对外接口"""
-    llm = create_llm(provider)
+    llm = create_llm(provider, user_key)
     return llm.chat_stream(messages, tools, tool_choice)

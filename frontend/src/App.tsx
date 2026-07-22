@@ -21,6 +21,8 @@ function App() {
   const [modelProvider, setModelProvider] = useState('deepseek')
   const [isDark, setIsDark] = useState(false)
   const [toast, setToast] = useState('')
+  // 各模型是否真正配置密钥（false = 选中后将用 DeepSeek 兜底）
+  const [modelEffective, setModelEffective] = useState<Record<string, boolean>>({})
   const bottomRef = useRef<HTMLDivElement>(null)
 
   // ── 认证表单状态 ──
@@ -41,6 +43,11 @@ function App() {
   const [showSidebar, setShowSidebar] = useState(true)
   const [authError, setAuthError] = useState('')
   const [authLoading, setAuthLoading] = useState(false)
+  // 用户级 LLM 密钥（前端切换器用）
+  const [configuredProviders, setConfiguredProviders] = useState<string[]>([])
+  const [showKeySettings, setShowKeySettings] = useState(false)
+  const [keyDrafts, setKeyDrafts] = useState<Record<string, string>>({})
+  const [keySaving, setKeySaving] = useState(false)
 
   const apiBase = import.meta.env.VITE_API_URL || ''
 
@@ -268,13 +275,75 @@ function App() {
     } catch {}
   }
 
-  // 登录/切换页面时加载会话列表 + 当前会话历史
+  // 加载当前用户已配置的模型密钥（用于切换器标记「你的密钥」）
+  const fetchLLMKeys = async () => {
+    try {
+      const res = await fetch(`${apiBase}/user/llm-keys`, { headers: authHeaders() })
+      if (res.ok) {
+        const data = await res.json()
+        setConfiguredProviders(data.configured_providers || [])
+      }
+    } catch {}
+  }
+
+  // 拉取各模型「是否真正配置密钥」状态（用于切换器标记兜底 + 切换提示）
+  const fetchModels = async () => {
+    try {
+      const res = await fetch(`${apiBase}/models`, { headers: authHeaders() })
+      if (res.ok) {
+        const data = await res.json()
+        const eff: Record<string, boolean> = {}
+        for (const m of (data.models || [])) eff[m.id] = !!m.effective
+        setModelEffective(eff)
+      }
+    } catch {}
+  }
+
+  // 登录/切换页面时加载会话列表 + 当前会话历史 + 模型密钥配置
   useEffect(() => {
     if (token) {
       fetchSessions()
       if (sessionId) fetchMessages(sessionId)
+      fetchLLMKeys()
+      fetchModels()
     }
   }, [token])
+
+  // ── 模型密钥设置 ──
+  const saveKeys = async () => {
+    setKeySaving(true)
+    try {
+      for (const [provider, apiKey] of Object.entries(keyDrafts)) {
+        if (apiKey && apiKey.trim()) {
+          await fetch(`${apiBase}/user/llm-keys`, {
+            method: 'PUT',
+            headers: authHeaders(),
+            body: JSON.stringify({ provider, api_key: apiKey.trim() }),
+          })
+        }
+      }
+      await fetchLLMKeys()
+      await fetchModels()
+      setKeyDrafts({})
+      setShowKeySettings(false)
+      setToast('密钥已保存')
+    } catch {
+      setToast('保存失败，请重试')
+    } finally {
+      setKeySaving(false)
+    }
+  }
+
+  const deleteKey = async (provider: string) => {
+    try {
+      await fetch(`${apiBase}/user/llm-keys/${provider}`, { method: 'DELETE', headers: authHeaders() })
+      await fetchLLMKeys()
+      await fetchModels()
+      setToast(`已删除 ${MODEL_INFO[provider]?.label || provider} 的密钥`)
+    } catch {
+      setToast('删除失败')
+    }
+  }
 
   // ── 聊天操作 ──
   const sendMessage = async () => {
@@ -553,22 +622,34 @@ function App() {
             </h1>
           </div>
           <div className="flex items-center gap-2">
-            <div className="relative">
+            <div className="relative flex items-center gap-1">
               <select
                 value={modelProvider}
                 onChange={(e) => {
                   const val = e.target.value
                   setModelProvider(val)
-                  setToast(`已切换到 ${MODEL_INFO[val].label} · ${MODEL_INFO[val].role}`)
+                  if (!modelEffective[val]) {
+                    setToast(`${MODEL_INFO[val].label} 未配置密钥，将使用 DeepSeek 兜底回答`)
+                  } else {
+                    setToast(`已切换到 ${MODEL_INFO[val].label} · ${MODEL_INFO[val].role}`)
+                  }
                 }}
                 className={`text-xs rounded px-2 py-1 cursor-pointer ${isDark ? "bg-gray-800 text-gray-200 border-gray-600" : "bg-gray-100 text-gray-700 border-gray-300"} border`}
                 title="点击切换模型"
               >
-                <option value="deepseek">DeepSeek · 通用助手</option>
-                <option value="glm">智谱 GLM · 创意写作</option>
-                <option value="qwen">通义千问 · 逻辑分析</option>
-                <option value="yi">零一万物 · 头脑风暴</option>
+                {Object.entries(MODEL_INFO).map(([key, info]) => (
+                  <option key={key} value={key}>
+                    {info.label} · {info.role}
+                    {configuredProviders.includes(key) ? " （你的密钥）" : ""}
+                    {modelEffective[key] === false ? " （兜底）" : ""}
+                  </option>
+                ))}
               </select>
+              <button
+                onClick={() => setShowKeySettings(true)}
+                className={`text-xs rounded px-2 py-1 border cursor-pointer ${isDark ? "bg-gray-800 text-gray-200 border-gray-600" : "bg-gray-100 text-gray-700 border-gray-300"} hover:border-blue-500`}
+                title="模型密钥设置（每个用户可填自己的 key）"
+              >密钥</button>
               {toast && (
                 <div className="absolute top-full left-1/2 -translate-x-1/2 mt-1 z-50 whitespace-nowrap text-xs px-2 py-1 rounded shadow-lg bg-blue-600 text-white">
                   {toast}
@@ -683,6 +764,66 @@ function App() {
           >发送</button>
         </div>
       </footer>
+
+      {/* 模型密钥设置弹窗 */}
+      {showKeySettings && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4"
+          onClick={() => setShowKeySettings(false)}
+        >
+          <div
+            className={`w-full max-w-md rounded-2xl shadow-xl ${isDark ? "bg-gray-900 text-gray-100" : "bg-white text-gray-800"} p-5`}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between mb-3">
+              <h2 className="text-base font-semibold">模型密钥设置</h2>
+              <button
+                onClick={() => setShowKeySettings(false)}
+                className="text-gray-400 hover:text-gray-600 cursor-pointer"
+                title="关闭">✕</button>
+            </div>
+            <p className="text-xs text-gray-400 mb-4">
+              填写你自己的各厂商 API Key，保存后即可在上方切换器中使用，无需改动后端。留空的项不会修改。
+            </p>
+            <div className="space-y-3">
+              {Object.entries(MODEL_INFO).map(([key, info]) => (
+                <div key={key} className={`rounded-lg border p-3 ${isDark ? "border-gray-700" : "border-gray-200"}`}>
+                  <div className="flex items-center justify-between mb-1">
+                    <span className="text-sm font-medium">{info.label} · {info.role}</span>
+                    {configuredProviders.includes(key)
+                      ? <span className="text-xs text-green-500">已配置</span>
+                      : <span className="text-xs text-gray-400">未配置</span>}
+                  </div>
+                  <input
+                    type="password"
+                    value={keyDrafts[key] || ''}
+                    onChange={(e) => setKeyDrafts((p) => ({ ...p, [key]: e.target.value }))}
+                    placeholder="粘贴 API Key（留空不修改）"
+                    className={`w-full rounded-md border px-3 py-1.5 text-sm outline-none focus:border-blue-500 ${isDark ? "border-gray-700 bg-gray-800 text-gray-100 placeholder-gray-500" : "border-gray-300 bg-white text-gray-800 placeholder-gray-400"}`}
+                  />
+                  {configuredProviders.includes(key) && (
+                    <button
+                      onClick={() => deleteKey(key)}
+                      className="mt-2 text-xs text-red-500 hover:text-red-600 cursor-pointer"
+                    >删除该密钥</button>
+                  )}
+                </div>
+              ))}
+            </div>
+            <div className="mt-4 flex justify-end gap-2">
+              <button
+                onClick={() => setShowKeySettings(false)}
+                className="text-sm px-3 py-1.5 rounded-md border border-gray-300 text-gray-500 cursor-pointer"
+              >取消</button>
+              <button
+                onClick={saveKeys}
+                disabled={keySaving}
+                className="text-sm px-3 py-1.5 rounded-md bg-blue-600 text-white hover:bg-blue-500 disabled:opacity-40 cursor-pointer"
+              >{keySaving ? '保存中...' : '保存'}</button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
     </div>
   )

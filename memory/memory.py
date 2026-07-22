@@ -4,6 +4,9 @@ import secrets
 import hashlib
 from datetime import datetime
 from typing import List, Dict, Optional, Tuple
+from utils.logger import get_logger
+
+logger = get_logger(__name__)
 
 class Memory:
     def __init__(self, db_path: str = "memory/chat_history.db"):
@@ -59,6 +62,20 @@ class Memory:
                     session_id TEXT NOT NULL UNIQUE,
                     label TEXT DEFAULT 'default',
                     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (user_id) REFERENCES users(id)
+                )
+            """)
+            # 用户级 LLM 密钥表（前端切换器用，每个用户可填自己的各厂商 key）
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS user_llm_keys (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id INTEGER NOT NULL,
+                    provider TEXT NOT NULL,           -- deepseek | glm | qwen | yi
+                    api_key TEXT NOT NULL,
+                    base_url TEXT DEFAULT '',
+                    model TEXT DEFAULT '',
+                    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    UNIQUE(user_id, provider),
                     FOREIGN KEY (user_id) REFERENCES users(id)
                 )
             """)
@@ -280,3 +297,85 @@ class Memory:
                 }
                 for r in cursor.fetchall()
             ]
+
+    # ========== 用户级 LLM 密钥 ==========
+
+    def set_user_llm_key(self, user_id: int, provider: str, api_key: str,
+                         base_url: str = "", model: str = "") -> bool:
+        """保存（upsert）某用户的某厂商 LLM 密钥"""
+        provider = (provider or "").lower().strip()
+        if provider not in ("deepseek", "glm", "qwen", "yi"):
+            return False
+        if not api_key or not api_key.strip():
+            return False
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.cursor()
+                cursor.execute(
+                    """
+                    INSERT INTO user_llm_keys (user_id, provider, api_key, base_url, model, updated_at)
+                    VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                    ON CONFLICT(user_id, provider) DO UPDATE SET
+                        api_key = excluded.api_key,
+                        base_url = excluded.base_url,
+                        model = excluded.model,
+                        updated_at = CURRENT_TIMESTAMP
+                    """,
+                    (user_id, provider, api_key.strip(), base_url.strip(), model.strip()),
+                )
+                conn.commit()
+            return True
+        except Exception as e:
+            logger.error("保存用户 LLM key 失败: %s", e)
+            return False
+
+    def get_user_llm_key(self, user_id: int, provider: str) -> Optional[Dict]:
+        """获取某用户某厂商的真实密钥（仅聊天调用内部使用，不外发）"""
+        provider = (provider or "").lower().strip()
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "SELECT api_key, base_url, model FROM user_llm_keys WHERE user_id = ? AND provider = ?",
+                (user_id, provider),
+            )
+            row = cursor.fetchone()
+            if row is None:
+                return None
+            return {
+                "api_key": row[0],
+                "base_url": row[1] or "",
+                "model": row[2] or "",
+            }
+
+    def get_user_llm_keys(self, user_id: int) -> List[Dict]:
+        """返回某用户已配置的所有厂商（脱敏，不返回真实 key）"""
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "SELECT provider, api_key, base_url, model, updated_at FROM user_llm_keys WHERE user_id = ? ORDER BY provider",
+                (user_id,),
+            )
+            result = []
+            for r in cursor.fetchall():
+                key = r[1] or ""
+                masked = key[-4:] if len(key) >= 4 else "****"
+                result.append({
+                    "provider": r[0],
+                    "api_key_masked": f"****{masked}",
+                    "base_url": r[2] or "",
+                    "model": r[3] or "",
+                    "updated_at": str(r[4]) if r[4] else "",
+                })
+            return result
+
+    def delete_user_llm_key(self, user_id: int, provider: str) -> bool:
+        """删除某用户的某厂商密钥"""
+        provider = (provider or "").lower().strip()
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "DELETE FROM user_llm_keys WHERE user_id = ? AND provider = ?",
+                (user_id, provider),
+            )
+            conn.commit()
+            return cursor.rowcount > 0
